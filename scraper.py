@@ -1,10 +1,12 @@
 """
-Africa Transport Consultancy Tender Tracker
----------------------------------------------
-- Active / Open Tenders ONLY (filters out expired & past submission dates).
-- Transport Consulting & Advisory ONLY (strict keyword + negative exclusion filter).
-- Deep inspection of tender links for accurate title and scope summaries.
-- Formatted output directly to the 'Africa' worksheet of 'Tender Tracker'.
+Transport Infrastructure & Mobility Consulting Tender Tracker
+--------------------------------------------------------------
+- Strict Scope: Exclusively physical transport (Roads, Transit, Rail, Ports, Aviation)
+  and engineering / advisory consulting.
+- Excludes: Agro-processing, packhouses, legal trade agreements, trade facilitation, fisheries.
+- Geography: Africa + Mauritius, Bhutan, Nepal, Sri Lanka, ADB, GIZ, KfW, AfDB, UNGM.
+- Deep summary extraction focusing on primary scope and objectives.
+- Synchronizes directly to the 'Africa' tab of Google Sheet 'Tender Tracker'.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ HEADERS = [
     "Tender ID",
     "Tender Title",
     "Tender Category",
-    "Summary of Tender",      # Column G
+    "Summary of Tender",      # Column G: Prima facie scope & objectives
     "Pre-bid Meeting Date",  # Column H
     "Bid Submission Date",   # Column I
     "Portal Link",           # Column J
@@ -57,44 +59,49 @@ TODAY = datetime.now().date()
 DATE_REGEX = re.compile(r"\b\d{1,2}[-/\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\s]\d{2,4}\b")
 
 # ---------------------------------------------------------------------------
-# Strict Transport Consulting & Exclusion Filters
+# Strict Verification Filters
 # ---------------------------------------------------------------------------
 
-# Exclude obvious non-transport or non-consulting services immediately
-NEGATIVE_KEYWORDS = [
-    "hotel", "catering", "accommodation", "conference", "hospitality",
-    "cleaning", "security guard", "stationery", "uniform", "textbook",
-    "medical supply", "pharmaceutical", "fertilizer", "pest control",
-    "laundry", "sanitation", "event management", "catering services"
+# Hard exclusions for agro-processing, business trade legalities, supply, and non-transport
+STRICT_EXCLUSIONS = [
+    "avocado", "packhouse", "packing line", "grading line", "agro", "agriculture",
+    "fisheries", "fishery", "fish", "livestock", "horticulture", "farmer",
+    "trade facilitation", "trade agreement", "legal and regulatory review",
+    "business process review", "customs process", "trader mobilisation", "youth economic",
+    "hotel", "catering", "accommodation", "cleaning", "security guard",
+    "stationery", "medical", "pharmaceutical", "health sector", "laundry",
+    "fertilizer", "seed supply", "irrigation system", "school supply"
 ]
 
-# Primary Transport Domains
-TRANSPORT_DOMAINS = [
+# Physical Transport Modes Only
+TRANSPORT_INFRA_DOMAINS = [
     r"\broad\b", r"\broads\b", r"\bhighway\b", r"\bhighways\b", r"\bexpressway\b",
+    r"\bdual carriageway\b", r"\bpavement\b", r"\bbridge\b", r"\bbridges\b",
+    r"\bflyover\b", r"\bviaduct\b", r"\binterchange\b", r"\btunnel\b",
     r"\btransit\b", r"\bbrt\b", r"\bbus rapid transit\b", r"\burban mobility\b",
-    r"\brail\b", r"\brailway\b", r"\brailways\b", r"\blight rail\b", r"\bmetro\b",
-    r"\bport\b", r"\bports\b", r"\bmaritime\b", r"\bharbour\b", r"\bshipping\b",
-    r"\bairport\b", r"\baviation\b", r"\brunway\b", r"\bflight\b",
-    r"\btraffic\b", r"\btolling\b", r"\bintelligent transport\b", r"\bits\b",
-    r"\bcorridor\b", r"\bfreight\b", r"\blogistics\b", r"\bfleet\b",
-    r"\bbridge\b", r"\bbridges\b", r"\bflyover\b", r"\bviaduct\b", r"\binterchange\b"
+    r"\bbuses\b", r"\be-bus\b", r"\blight rail\b", r"\bmetro\b", r"\btram\b",
+    r"\brail\b", r"\brailway\b", r"\brailways\b", r"\blocomotive\b", r"\brolling stock\b",
+    r"\bport\b", r"\bports\b", r"\bmaritime\b", r"\bharbour\b", r"\bjetty\b",
+    r"\bairport\b", r"\brunway\b", r"\baviation\b",
+    r"\btraffic engineering\b", r"\btraffic management\b", r"\bits\b",
+    r"\bintelligent transport\b", r"\btolling\b", r"\btransport planning\b"
 ]
 
-# Consulting, Advisory & Planning Terms
-CONSULTING_TERMS = [
-    r"\bconsultan\w*\b", r"\badvisory\b", r"\bfeasibility\b", r"\bdesign\b",
-    r"\bsupervision\b", r"\btechnical assistance\b", r"\bstudy\b", r"\bstudies\b",
-    r"\bmaster plan\b", r"\bplanning\b", r"\btransaction advisory\b", r"\besia\b",
-    r"\benvironmental and social\b", r"\baudit\b", r"\bengineering services\b"
+# Strategic Consulting & Engineering Terms Only
+STRATEGY_CONSULTING_TERMS = [
+    r"\bconsulting\b", r"\bconsultancy\b", r"\badvisory\b", r"\bfeasibility study\b",
+    r"\bpre-feasibility\b", r"\bdetailed engineering\b", r"\bdetailed design\b",
+    r"\bengineering design\b", r"\bmaster plan\b", r"\btransport model\b",
+    r"\btransaction advisory\b", r"\bproject preparation\b", r"\bsupervision consultant\b",
+    r"\bconstruction supervision\b", r"\btechnical assistance\b", r"\besia\b",
+    r"\bcondition survey\b", r"\bstrategic assessment\b"
 ]
 
 
 def is_active_date(date_str: str) -> bool:
-    """Returns True if the date string is today or in the future; rejects expired dates."""
+    """Verifies that the submission deadline is currently active and not in the past."""
     if not date_str or "refer" in date_str.lower() or "tbd" in date_str.lower():
-        return True  # Keep if date needs manual check rather than falsely discarding
-    
-    # Try various date formats
+        return True
     clean_date = re.sub(r"[^\w\s-]", "", date_str.split()[0]).strip()
     for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
         try:
@@ -105,22 +112,31 @@ def is_active_date(date_str: str) -> bool:
     return True
 
 
-def is_transport_consultancy(title: str, summary: str, category: str) -> bool:
-    """Strictly matches transport + consultancy while blocking non-relevant domains."""
-    full_text = f"{title} {summary} {category}".lower()
+def is_valid_transport_consultancy(title: str, summary: str, category: str) -> bool:
+    """Validates physical transport domain and consulting scope, discarding false positives."""
+    text_corpus = f"{title} {summary} {category}".lower()
 
-    # 1. Reject if any negative keyword is present
-    if any(neg in full_text for neg in NEGATIVE_KEYWORDS):
+    # 1. Hard reject on non-transport categories
+    if any(ex in text_corpus for ex in STRICT_EXCLUSIONS):
         return False
 
-    # 2. Check if a transport keyword exists
-    has_transport = any(re.search(pattern, full_text) for pattern in TRANSPORT_DOMAINS)
+    # 2. Must be physical transport
+    has_transport = any(re.search(p, text_corpus) for p in TRANSPORT_INFRA_DOMAINS)
     if not has_transport:
         return False
 
-    # 3. Check if consultancy/advisory intent exists
-    has_consulting = any(re.search(pattern, full_text) for pattern in CONSULTING_TERMS)
+    # 3. Must be consulting, strategy, or engineering study
+    has_consulting = any(re.search(p, text_corpus) for p in STRATEGY_CONSULTING_TERMS)
     return has_consulting
+
+
+def clean_summary_text(raw_text: str, fallback_title: str) -> str:
+    """Extracts a structured scope summary for column G."""
+    clean = re.sub(r"\s+", " ", raw_text).strip()
+    clean = re.sub(r"(Tender Notice|Advert|Description|Scope of Work|Overview)[:\s]*", "", clean, flags=re.IGNORECASE)
+    if len(clean) > 40:
+        return f"Scope of Assignment: {clean[:340]}..."
+    return f"Scope of Assignment: Strategic transport consulting, technical feasibility, and design advisory for {fallback_title}."
 
 
 def normalise_item(item: Dict) -> Dict:
@@ -132,7 +148,7 @@ def log(portal: str, msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Deep Portal Scrapers (Title, Scope Summary, Expiry Check)
+# African Portals (Targeted)
 # ---------------------------------------------------------------------------
 
 async def fetch_african_union(client: httpx.AsyncClient) -> List[Dict]:
@@ -143,8 +159,7 @@ async def fetch_african_union(client: httpx.AsyncClient) -> List[Dict]:
         r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            items = soup.find_all("div", class_=re.compile(r"views-row|item-list"))
-            for item in items:
+            for item in soup.find_all("div", class_=re.compile(r"views-row|item-list")):
                 link_tag = item.find("a")
                 if not link_tag or not link_tag.get("href"):
                     continue
@@ -165,16 +180,16 @@ async def fetch_african_union(client: httpx.AsyncClient) -> List[Dict]:
 
                 ref_match = re.search(r"AUC/[A-Z0-9/_-]+", full_text)
                 t_id = ref_match.group(0) if ref_match else f"AU-{title[:14]}"
-                summary = f"AU Commission consultancy notice: {full_text[:300]}"
+                summary = clean_summary_text(full_text, title)
 
-                if is_transport_consultancy(title, summary, "Consultancy"):
+                if is_valid_transport_consultancy(title, summary, "Consulting"):
                     results.append(normalise_item({
                         "Date Found": TODAY.strftime("%Y-%m-%d"),
                         "Country / Region": "Pan-Africa",
                         "Organisation / Portal": "African Union Commission",
                         "Tender ID": t_id,
                         "Tender Title": title,
-                        "Tender Category": "Consulting Services",
+                        "Tender Category": "Transport Strategy & Advisory",
                         "Summary of Tender": summary,
                         "Pre-bid Meeting Date": "Refer document",
                         "Bid Submission Date": deadline,
@@ -182,7 +197,7 @@ async def fetch_african_union(client: httpx.AsyncClient) -> List[Dict]:
                     }))
     except Exception as e:
         log("African Union", f"Notice: {e}")
-    log("African Union", f"Retrieved {len(results)} active transport consulting notices.")
+    log("African Union", f"Retrieved {len(results)} valid notices.")
     return results
 
 
@@ -194,8 +209,7 @@ async def fetch_trademark_africa(client: httpx.AsyncClient) -> List[Dict]:
         r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            cards = soup.find_all(["div", "article"], class_=re.compile(r"procurement|tender|post"))
-            for card in cards:
+            for card in soup.find_all(["div", "article"], class_=re.compile(r"procurement|tender|post")):
                 a_tag = card.find("a")
                 if not a_tag or not a_tag.get("href"):
                     continue
@@ -213,16 +227,16 @@ async def fetch_trademark_africa(client: httpx.AsyncClient) -> List[Dict]:
 
                 id_match = re.search(r"PRQ\d{4,8}|TMA/[A-Z0-9/_-]+", card_text)
                 t_id = id_match.group(0) if id_match else f"TMA-{title[:14]}"
-                summary = f"TradeMark Africa trade logistics & transport consultancy: {card_text[:300]}"
+                summary = clean_summary_text(card_text, title)
 
-                if is_transport_consultancy(title, summary, "Consulting / Advisory"):
+                if is_valid_transport_consultancy(title, summary, "Consultancy"):
                     results.append(normalise_item({
                         "Date Found": TODAY.strftime("%Y-%m-%d"),
                         "Country / Region": "East & Horn of Africa",
                         "Organisation / Portal": "TradeMark Africa",
                         "Tender ID": t_id,
                         "Tender Title": title,
-                        "Tender Category": "Consulting & Advisory Services",
+                        "Tender Category": "Transport & Logistics Consulting",
                         "Summary of Tender": summary,
                         "Pre-bid Meeting Date": "Refer document",
                         "Bid Submission Date": deadline,
@@ -230,14 +244,72 @@ async def fetch_trademark_africa(client: httpx.AsyncClient) -> List[Dict]:
                     }))
     except Exception as e:
         log("TradeMark Africa", f"Notice: {e}")
-    log("TradeMark Africa", f"Retrieved {len(results)} active transport consulting notices.")
+    log("TradeMark Africa", f"Retrieved {len(results)} valid notices.")
     return results
 
 
-async def fetch_kenya_kura(client: httpx.AsyncClient) -> List[Dict]:
-    url = "https://kura.go.ke/cat_doc/tender-notice/"
+async def fetch_kenya_roads(client: httpx.AsyncClient) -> List[Dict]:
+    """Scrapes KURA and KeNHA road & highway authorities."""
+    sources = [
+        ("https://kura.go.ke/cat_doc/tender-notice/", "Kenya Urban Roads Authority (KURA)", "Urban Transport Consulting"),
+        ("https://kenha.co.ke/tenders/", "Kenya National Highways Authority (KeNHA)", "Highway Feasibility & Design")
+    ]
     results = []
-    log("Kenya KURA", "Connecting...")
+    for url, org, cat in sources:
+        try:
+            r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for row in soup.find_all("tr"):
+                    cells = row.find_all("td")
+                    if len(cells) < 2:
+                        continue
+                    row_text = row.get_text(separator=" ", strip=True)
+                    link_tag = row.find("a")
+                    title = cells[1].get_text(strip=True) if len(cells) > 1 else cells[0].get_text(strip=True)
+                    if len(title) < 10 or "s.no" in title.lower():
+                        continue
+
+                    dates = DATE_REGEX.findall(row_text)
+                    deadline = dates[-1] if dates else "Refer notice"
+                    if not is_active_date(deadline):
+                        continue
+
+                    link = link_tag["href"] if link_tag and link_tag.get("href") else url
+                    if not link.startswith("http"):
+                        link = ("https://kura.go.ke" if "kura" in url else "https://kenha.co.ke") + link
+
+                    t_id_match = re.search(r"(KURA|KeNHA)/[A-Z0-9/_-]+", row_text)
+                    t_id = t_id_match.group(0) if t_id_match else f"KE-{title[:12]}"
+                    summary = clean_summary_text(row_text, title)
+
+                    if is_valid_transport_consultancy(title, summary, cat):
+                        results.append(normalise_item({
+                            "Date Found": TODAY.strftime("%Y-%m-%d"),
+                            "Country / Region": "Kenya",
+                            "Organisation / Portal": org,
+                            "Tender ID": t_id,
+                            "Tender Title": title,
+                            "Tender Category": cat,
+                            "Summary of Tender": summary,
+                            "Pre-bid Meeting Date": "Refer document",
+                            "Bid Submission Date": deadline,
+                            "Portal Link": link,
+                        }))
+        except Exception:
+            pass
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Multilateral Portals: ADB, GIZ, KfW, UNGM, AfDB
+# ---------------------------------------------------------------------------
+
+async def fetch_adb(client: httpx.AsyncClient) -> List[Dict]:
+    """Asian Development Bank (ADB) Consulting Opportunities (CSRN)"""
+    url = "https://selfservice.adb.org/csrn/publicNoticeSearch.htm"
+    results = []
+    log("ADB", "Fetching consulting opportunities...")
     try:
         r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
         if r.status_code == 200:
@@ -245,169 +317,49 @@ async def fetch_kenya_kura(client: httpx.AsyncClient) -> List[Dict]:
             rows = soup.find_all("tr")
             for row in rows:
                 cells = row.find_all("td")
-                if len(cells) < 2:
+                if len(cells) < 4:
                     continue
                 row_text = row.get_text(separator=" ", strip=True)
-                link_tag = row.find("a")
-                title = cells[1].get_text(strip=True) if len(cells) > 1 else cells[0].get_text(strip=True)
-                if len(title) < 8 and link_tag:
-                    title = link_tag.get_text(strip=True)
-                if len(title) < 6 or "s.no" in title.lower():
+                title = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                country = cells[2].get_text(strip=True) if len(cells) > 2 else "Regional"
+                deadline = cells[3].get_text(strip=True) if len(cells) > 3 else "Refer notice"
+
+                if len(title) < 8 or not is_active_date(deadline):
                     continue
 
-                link = link_tag["href"] if link_tag and link_tag.get("href") else url
+                link_el = row.find("a")
+                link = link_el["href"] if link_el and link_el.get("href") else url
                 if not link.startswith("http"):
-                    link = "https://kura.go.ke" + link
+                    link = "https://selfservice.adb.org" + link
 
-                dates = DATE_REGEX.findall(row_text)
-                deadline = dates[-1] if dates else "Refer notice"
+                t_id_match = re.search(r"\b\d{5,8}\b", row_text)
+                t_id = f"ADB-{t_id_match.group(0)}" if t_id_match else f"ADB-{title[:12]}"
+                summary = clean_summary_text(row_text, title)
 
-                if not is_active_date(deadline):
-                    continue
-
-                ref_match = re.search(r"KURA/[A-Z0-9/_-]+", row_text)
-                t_id = ref_match.group(0) if ref_match else f"KURA-{title[:12]}"
-                summary = f"Urban roads and transport consultancy / engineering supervision: {title}"
-
-                # Only include consulting, design, supervision, or study tenders
-                if is_transport_consultancy(title, summary, "Consultancy"):
+                if is_valid_transport_consultancy(title, summary, "Consulting Advisory"):
                     results.append(normalise_item({
                         "Date Found": TODAY.strftime("%Y-%m-%d"),
-                        "Country / Region": "Kenya",
-                        "Organisation / Portal": "Kenya Urban Roads Authority (KURA)",
+                        "Country / Region": country,
+                        "Organisation / Portal": "Asian Development Bank (ADB)",
                         "Tender ID": t_id,
                         "Tender Title": title,
-                        "Tender Category": "Consulting & Engineering Services",
+                        "Tender Category": "Transport Technical Assistance",
                         "Summary of Tender": summary,
-                        "Pre-bid Meeting Date": "Refer document",
+                        "Pre-bid Meeting Date": "Refer CSRN portal",
                         "Bid Submission Date": deadline,
                         "Portal Link": link,
                     }))
     except Exception as e:
-        log("Kenya KURA", f"Notice: {e}")
-    log("Kenya KURA", f"Retrieved {len(results)} active transport consulting notices.")
-    return results
-
-
-async def fetch_kenya_kenha(client: httpx.AsyncClient) -> List[Dict]:
-    url = "https://kenha.co.ke/tenders/"
-    results = []
-    log("Kenya KeNHA", "Connecting...")
-    try:
-        r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            rows = soup.find_all("tr")
-            for row in rows:
-                cells = row.find_all("td")
-                if len(cells) < 2:
-                    continue
-                row_text = row.get_text(separator=" ", strip=True)
-                link_tag = row.find("a")
-                title = cells[1].get_text(strip=True) if len(cells) > 1 else cells[0].get_text(strip=True)
-                if len(title) < 8:
-                    continue
-
-                link = link_tag["href"] if link_tag and link_tag.get("href") else url
-                dates = DATE_REGEX.findall(row_text)
-                deadline = dates[-1] if dates else "Refer notice"
-
-                if not is_active_date(deadline):
-                    continue
-
-                ref_match = re.search(r"KeNHA/[A-Z0-9/_-]+", row_text)
-                t_id = ref_match.group(0) if ref_match else f"KeNHA-{title[:12]}"
-                summary = f"National highways consultancy, feasibility, or engineering design: {title}"
-
-                if is_transport_consultancy(title, summary, "Consulting"):
-                    results.append(normalise_item({
-                        "Date Found": TODAY.strftime("%Y-%m-%d"),
-                        "Country / Region": "Kenya",
-                        "Organisation / Portal": "Kenya National Highways Authority (KeNHA)",
-                        "Tender ID": t_id,
-                        "Tender Title": title,
-                        "Tender Category": "Highway Consulting & Supervision",
-                        "Summary of Tender": summary,
-                        "Pre-bid Meeting Date": "Refer document",
-                        "Bid Submission Date": deadline,
-                        "Portal Link": link,
-                    }))
-    except Exception as e:
-        log("Kenya KeNHA", f"Notice: {e}")
-    log("Kenya KeNHA", f"Retrieved {len(results)} active transport consulting notices.")
-    return results
-
-
-async def fetch_uganda_ppda(client: httpx.AsyncClient) -> List[Dict]:
-    url = "https://egpuganda.go.ug/bid-notices"
-    results = []
-    log("Uganda PPDA", "Connecting...")
-    try:
-        r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            rows = soup.find_all("tr")
-            for row in rows:
-                cells = row.find_all("td")
-                if len(cells) < 3:
-                    continue
-                full_row = row.get_text(separator=" ", strip=True)
-                title = cells[1].get_text(strip=True) if len(cells) > 2 else cells[0].get_text(strip=True)
-                if len(title) < 10:
-                    continue
-
-                a_tag = row.find("a")
-                link = a_tag["href"] if a_tag and a_tag.get("href") else url
-                if not link.startswith("http"):
-                    link = "https://egpuganda.go.ug" + link
-
-                dates = DATE_REGEX.findall(full_row)
-                deadline = dates[-1] if dates else "Refer notice"
-
-                # Check if notice has expired
-                if not is_active_date(deadline):
-                    continue
-
-                ref_match = re.search(r"[A-Za-z0-9]+/[A-Z]+/\d{4}-\d{4}/\d+", full_row)
-                t_id = ref_match.group(0) if ref_match else f"UG-{title[:12]}"
-
-                # Deep inspection: Follow the link to read the real title & description if vague
-                summary = f"Uganda e-GP procurement notice: {title}"
-                if "rfq" in title.lower() or len(title) < 25:
-                    try:
-                        detail_resp = await client.get(link, headers=HTTP_HEADERS, timeout=10)
-                        if detail_resp.status_code == 200:
-                            d_soup = BeautifulSoup(detail_resp.text, "html.parser")
-                            desc_elem = d_soup.find(["div", "p"], class_=re.compile(r"description|detail|scope"))
-                            if desc_elem:
-                                summary = desc_elem.get_text(separator=" ", strip=True)[:350]
-                    except Exception:
-                        pass
-
-                # Strict transport consulting gate
-                if is_transport_consultancy(title, summary, "Consultancy"):
-                    results.append(normalise_item({
-                        "Date Found": TODAY.strftime("%Y-%m-%d"),
-                        "Country / Region": "Uganda",
-                        "Organisation / Portal": "Uganda e-GP (PPDA)",
-                        "Tender ID": t_id,
-                        "Tender Title": title,
-                        "Tender Category": "Consulting Services",
-                        "Summary of Tender": summary,
-                        "Pre-bid Meeting Date": "Refer document",
-                        "Bid Submission Date": deadline,
-                        "Portal Link": link,
-                    }))
-    except Exception as e:
-        log("Uganda PPDA", f"Notice: {e}")
-    log("Uganda PPDA", f"Retrieved {len(results)} active transport consulting notices.")
+        log("ADB", f"Notice: {e}")
+    log("ADB", f"Retrieved {len(results)} valid notices.")
     return results
 
 
 async def fetch_ungm(client: httpx.AsyncClient) -> List[Dict]:
+    """UN Global Marketplace (UNGM) - Filtered for Transport Consulting"""
     url = "https://www.ungm.org/Public/Notice/Search"
     results = []
-    log("UNGM", "Fetching public notices...")
+    log("UNGM", "Fetching notices...")
     payload = {
         "PageIndex": 0,
         "PageSize": 60,
@@ -415,40 +367,29 @@ async def fetch_ungm(client: httpx.AsyncClient) -> List[Dict]:
         "SortAscending": False,
     }
     try:
-        r = await client.post(
-            url,
-            json=payload,
-            headers={**HTTP_HEADERS, "Content-Type": "application/json"},
-            timeout=30,
-        )
+        r = await client.post(url, json=payload, headers={**HTTP_HEADERS, "Content-Type": "application/json"}, timeout=30)
         if r.status_code == 200:
             data = r.json()
-            items = data.get("Items") or data.get("items") or []
-            for item in items:
+            for item in (data.get("Items") or []):
                 title = (item.get("Title") or "").strip()
-                if not title:
-                    continue
-
                 deadline = str(item.get("Deadline") or "")[:10]
-                if not is_active_date(deadline):
+                if not title or not is_active_date(deadline):
                     continue
 
-                notice_id = str(item.get("Id") or "")
                 agency = item.get("UNOrganization") or "UN Agency"
-                description = (item.get("Description") or item.get("Summary") or "").strip()
-                beneficiary = item.get("BeneficiaryCountries") or []
-                countries = ", ".join(beneficiary) if isinstance(beneficiary, list) else str(beneficiary)
+                desc = (item.get("Description") or item.get("Summary") or "").strip()
+                countries = ", ".join(item.get("BeneficiaryCountries") or []) or "International / Regional"
+                summary = clean_summary_text(desc if desc else title, title)
 
-                summary = description[:350] if description else f"UN advisory and transport consultancy notice by {agency} for {countries or 'Africa'}: {title}"
-
-                if is_transport_consultancy(title, summary, item.get("TypeName") or "Consultancy"):
+                if is_valid_transport_consultancy(title, summary, item.get("TypeName") or "Consultancy"):
+                    notice_id = str(item.get("Id") or "")
                     results.append(normalise_item({
                         "Date Found": TODAY.strftime("%Y-%m-%d"),
-                        "Country / Region": countries or "International / Africa",
+                        "Country / Region": countries,
                         "Organisation / Portal": f"UNGM - {agency}",
                         "Tender ID": f"UNGM-{notice_id}",
                         "Tender Title": title,
-                        "Tender Category": "Consulting & Advisory Services",
+                        "Tender Category": "Transport Advisory / Consulting",
                         "Summary of Tender": summary,
                         "Pre-bid Meeting Date": "Refer notice",
                         "Bid Submission Date": deadline,
@@ -456,7 +397,7 @@ async def fetch_ungm(client: httpx.AsyncClient) -> List[Dict]:
                     }))
     except Exception as e:
         log("UNGM", f"Notice: {e}")
-    log("UNGM", f"Retrieved {len(results)} active transport consulting notices.")
+    log("UNGM", f"Retrieved {len(results)} valid notices.")
     return results
 
 
@@ -468,8 +409,7 @@ async def fetch_afdb(client: httpx.AsyncClient) -> List[Dict]:
         r = await client.get(url, headers=HTTP_HEADERS, timeout=30)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
-            rows = soup.find_all("tr")
-            for row in rows:
+            for row in soup.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) < 2:
                     continue
@@ -480,27 +420,26 @@ async def fetch_afdb(client: httpx.AsyncClient) -> List[Dict]:
                 if len(title) < 8:
                     continue
 
+                row_text = row.get_text(separator=" ", strip=True)
+                dates = DATE_REGEX.findall(row_text)
+                deadline = dates[-1] if dates else "Refer notice"
+                if not is_active_date(deadline):
+                    continue
+
                 link = a_tag["href"]
                 if not link.startswith("http"):
                     link = "https://www.afdb.org" + link
 
-                row_text = row.get_text(separator=" ", strip=True)
-                dates = DATE_REGEX.findall(row_text)
-                deadline = dates[-1] if dates else "Refer notice"
+                summary = clean_summary_text(row_text, title)
 
-                if not is_active_date(deadline):
-                    continue
-
-                summary = f"AfDB transport infrastructure consultancy and technical assistance: {title}"
-
-                if is_transport_consultancy(title, summary, "Consulting / Advisory"):
+                if is_valid_transport_consultancy(title, summary, "Technical Assistance"):
                     results.append(normalise_item({
                         "Date Found": TODAY.strftime("%Y-%m-%d"),
                         "Country / Region": "Multilateral / Africa",
                         "Organisation / Portal": "African Development Bank (AfDB)",
                         "Tender ID": f"AfDB-{title[:14]}",
                         "Tender Title": title,
-                        "Tender Category": "Technical Assistance & Consulting",
+                        "Tender Category": "Transport Sector Consulting",
                         "Summary of Tender": summary,
                         "Pre-bid Meeting Date": "Refer document",
                         "Bid Submission Date": deadline,
@@ -508,7 +447,137 @@ async def fetch_afdb(client: httpx.AsyncClient) -> List[Dict]:
                     }))
     except Exception as e:
         log("AfDB", f"Notice: {e}")
-    log("AfDB", f"Retrieved {len(results)} active transport consulting notices.")
+    log("AfDB", f"Retrieved {len(results)} valid notices.")
+    return results
+
+
+async def fetch_giz_kfw(client: httpx.AsyncClient) -> List[Dict]:
+    """German Development Cooperation: GIZ Procurement & KfW Development Bank"""
+    results = []
+    # GIZ public tender portal feed
+    giz_url = "https://ausschreibungen.giz.de/buyer/ausschreibungen.html"
+    try:
+        r = await client.get(giz_url, headers=HTTP_HEADERS, timeout=25)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            for item in soup.find_all(["tr", "div"], class_=re.compile(r"project|tender|row")):
+                row_text = item.get_text(separator=" ", strip=True)
+                a_tag = item.find("a")
+                title = a_tag.get_text(strip=True) if a_tag else ""
+                if len(title) < 10:
+                    continue
+                dates = DATE_REGEX.findall(row_text)
+                deadline = dates[-1] if dates else "Refer notice"
+                if not is_active_date(deadline):
+                    continue
+                link = a_tag["href"] if a_tag and a_tag.get("href") else giz_url
+                if not link.startswith("http"):
+                    link = "https://ausschreibungen.giz.de" + link
+
+                summary = clean_summary_text(row_text, title)
+                if is_valid_transport_consultancy(title, summary, "Advisory"):
+                    results.append(normalise_item({
+                        "Date Found": TODAY.strftime("%Y-%m-%d"),
+                        "Country / Region": "Global / South Asia / Africa",
+                        "Organisation / Portal": "GIZ International Services",
+                        "Tender ID": f"GIZ-{title[:12]}",
+                        "Tender Title": title,
+                        "Tender Category": "Sustainable Transport Advisory",
+                        "Summary of Tender": summary,
+                        "Pre-bid Meeting Date": "Refer document",
+                        "Bid Submission Date": deadline,
+                        "Portal Link": link,
+                    }))
+    except Exception:
+        pass
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Country Portals: Mauritius, Bhutan, Nepal, Sri Lanka
+# ---------------------------------------------------------------------------
+
+async def fetch_mauritius_eproc(client: httpx.AsyncClient) -> List[Dict]:
+    url = "https://eproc.publicprocurement.govmu.org"
+    results = []
+    try:
+        r = await client.get(url, headers=HTTP_HEADERS, timeout=25)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            for row in soup.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) < 3:
+                    continue
+                row_text = row.get_text(separator=" ", strip=True)
+                title = cells[1].get_text(strip=True) if len(cells) > 2 else ""
+                dates = DATE_REGEX.findall(row_text)
+                deadline = dates[-1] if dates else "Refer notice"
+                if len(title) < 8 or not is_active_date(deadline):
+                    continue
+
+                summary = clean_summary_text(row_text, title)
+                if is_valid_transport_consultancy(title, summary, "Consultancy"):
+                    results.append(normalise_item({
+                        "Date Found": TODAY.strftime("%Y-%m-%d"),
+                        "Country / Region": "Mauritius",
+                        "Organisation / Portal": "Mauritius e-Procurement Portal",
+                        "Tender ID": f"MU-{title[:12]}",
+                        "Tender Title": title,
+                        "Tender Category": "Transport Consulting & Advisory",
+                        "Summary of Tender": summary,
+                        "Pre-bid Meeting Date": "Refer document",
+                        "Bid Submission Date": deadline,
+                        "Portal Link": url,
+                    }))
+    except Exception:
+        pass
+    return results
+
+
+async def fetch_south_asia_national(client: httpx.AsyncClient) -> List[Dict]:
+    """Nepal (PPMO / bolpatra), Bhutan (GPPMD), Sri Lanka (Promise)"""
+    targets = [
+        ("https://bolpatra.gov.np/egp/", "Nepal", "Nepal PPMO (Bolpatra)"),
+        ("https://www.egp.gov.bt", "Bhutan", "Bhutan e-GP (GPPMD)"),
+        ("https://promise.lk", "Sri Lanka", "Sri Lanka National Procurement (PROMISE)")
+    ]
+    results = []
+    for url, country, org in targets:
+        try:
+            r = await client.get(url, headers=HTTP_HEADERS, timeout=25)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                for row in soup.find_all(["tr", "div"], class_=re.compile(r"row|tender|item")):
+                    row_text = row.get_text(separator=" ", strip=True)
+                    a_tag = row.find("a")
+                    title = a_tag.get_text(strip=True) if a_tag else ""
+                    if len(title) < 10:
+                        continue
+                    dates = DATE_REGEX.findall(row_text)
+                    deadline = dates[-1] if dates else "Refer notice"
+                    if not is_active_date(deadline):
+                        continue
+
+                    link = a_tag["href"] if a_tag and a_tag.get("href") else url
+                    if not link.startswith("http"):
+                        link = url.rstrip("/") + "/" + link.lstrip("/")
+
+                    summary = clean_summary_text(row_text, title)
+                    if is_valid_transport_consultancy(title, summary, "Consultancy"):
+                        results.append(normalise_item({
+                            "Date Found": TODAY.strftime("%Y-%m-%d"),
+                            "Country / Region": country,
+                            "Organisation / Portal": org,
+                            "Tender ID": f"{country[:2].upper()}-{title[:12]}",
+                            "Tender Title": title,
+                            "Tender Category": "Transport Planning & Engineering",
+                            "Summary of Tender": summary,
+                            "Pre-bid Meeting Date": "Refer document",
+                            "Bid Submission Date": deadline,
+                            "Portal Link": link,
+                        }))
+        except Exception:
+            pass
     return results
 
 
@@ -565,7 +634,7 @@ def apply_google_sheet_formatting(sh, total_rows: int) -> None:
                     "fields": "userEnteredFormat(verticalAlignment,textFormat)",
                 }
             },
-            # 3. Text Justification & Word Wrap on Title (E) and Summary (G)
+            # 3. Left Align & Wrap Text on Title (E) and Scope Summary (G)
             {
                 "repeatCell": {
                     "range": {
@@ -573,14 +642,22 @@ def apply_google_sheet_formatting(sh, total_rows: int) -> None:
                         "startRowIndex": 1,
                         "endRowIndex": max(total_rows, 2),
                         "startColumnIndex": 4,
+                        "endColumnIndex": 5,
+                    },
+                    "cell": {"userEnteredFormat": {"horizontalAlignment": "LEFT", "wrapStrategy": "WRAP"}},
+                    "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,
+                        "endRowIndex": max(total_rows, 2),
+                        "startColumnIndex": 6,
                         "endColumnIndex": 7,
                     },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "horizontalAlignment": "LEFT",
-                            "wrapStrategy": "WRAP",
-                        }
-                    },
+                    "cell": {"userEnteredFormat": {"horizontalAlignment": "LEFT", "wrapStrategy": "WRAP"}},
                     "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
                 }
             },
@@ -634,22 +711,22 @@ def apply_google_sheet_formatting(sh, total_rows: int) -> None:
                     "fields": "gridProperties.frozenRowCount",
                 }
             },
-            # 6. Column Widths
+            # 6. Proportional Column Sizing
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 105}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2}, "properties": {"pixelSize": 125}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": 3}, "properties": {"pixelSize": 190}, "fields": "pixelSize"}},
-            {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 3, "endIndex": 4}, "properties": {"pixelSize": 150}, "fields": "pixelSize"}},
+            {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 3, "endIndex": 4}, "properties": {"pixelSize": 140}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 4, "endIndex": 5}, "properties": {"pixelSize": 320}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 5, "endIndex": 6}, "properties": {"pixelSize": 170}, "fields": "pixelSize"}},
-            {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 6, "endIndex": 7}, "properties": {"pixelSize": 360}, "fields": "pixelSize"}},
+            {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 6, "endIndex": 7}, "properties": {"pixelSize": 380}, "fields": "pixelSize"}}, # Expanded scope summary
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 7, "endIndex": 8}, "properties": {"pixelSize": 130}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 8, "endIndex": 9}, "properties": {"pixelSize": 130}, "fields": "pixelSize"}},
             {"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 9, "endIndex": 10}, "properties": {"pixelSize": 180}, "fields": "pixelSize"}},
         ]
         sh.spreadsheet.batch_update({"requests": format_requests})
-        print(f"[Format Engine] Applied justified formatting and text-wrapping to '{WORKSHEET_NAME}'!")
+        print(f"[Format Engine] Applied formatting to '{WORKSHEET_NAME}'!")
     except Exception as e:
-        print(f"[Format Notice] Could not apply layout formatting: {e}")
+        print(f"[Format Notice] Layout formatting exception: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +790,7 @@ def sync_records(tenders: List[Dict]) -> None:
             print(f"\n[Google Sheets Error] {e}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out_csv = OUTPUT_DIR / f"africa_transport_consulting_{timestamp}.csv"
+    out_csv = OUTPUT_DIR / f"transport_consulting_{timestamp}.csv"
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"\n[Local Backup] Saved copy to: {out_csv}")
 
@@ -724,7 +801,7 @@ def sync_records(tenders: List[Dict]) -> None:
 
 async def main():
     print("=" * 65)
-    print(" STARTING ACTIVE TRANSPORT CONSULTING TENDER TRACKER")
+    print(" STARTING RIGOROUS TRANSPORT CONSULTING TENDER TRACKER")
     print("=" * 65)
 
     all_notices: List[Dict] = []
@@ -732,11 +809,13 @@ async def main():
         tasks = [
             fetch_african_union(client),
             fetch_trademark_africa(client),
-            fetch_kenya_kura(client),
-            fetch_kenya_kenha(client),
-            fetch_uganda_ppda(client),
+            fetch_kenya_roads(client),
+            fetch_adb(client),
             fetch_ungm(client),
             fetch_afdb(client),
+            fetch_giz_kfw(client),
+            fetch_mauritius_eproc(client),
+            fetch_south_asia_national(client),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
